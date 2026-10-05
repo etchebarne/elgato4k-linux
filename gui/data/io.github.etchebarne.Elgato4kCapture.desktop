@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Elgato 4K Capture
+Comment=Preview, listen to and configure Elgato 4K S / 4K X capture cards
+Exec=elgato4k-gui
+Icon=camera-video
+Terminal=false
+Categories=AudioVideo;Video;Recorder;
+Keywords=capture;elgato;hdmi;console;ps5;
+StartupNotify=true

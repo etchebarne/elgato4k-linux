@@ -1,0 +1,3 @@
+# Let the logged-in user control Elgato 4K X / 4K S capture cards
+# (needed by elgato4k-gui and elgato4k-linux to run without sudo).
+SUBSYSTEM=="usb", ATTR{idVendor}=="0fd9", ATTR{idProduct}=="009b|009c|009d|00ae|00af", TAG+="uaccess"

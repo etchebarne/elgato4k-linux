@@ -6,6 +6,55 @@ A command-line tool to control Elgato 4K X and 4K S capture cards on Linux. Supp
 
 > ⚠️ **Disclaimer**: This is an unofficial, community-developed tool. It is not affiliated with, endorsed by, or supported by Elgato/Corsair.
 
+## GUI: Elgato 4K Capture (`elgato4k-gui`)
+
+This fork adds a GTK4/libadwaita desktop app in [`gui/`](gui/) that does the
+day-to-day job of Elgato's 4K Capture Utility:
+
+- **Live preview** of the HDMI input (console, PC, …) with low latency,
+  fullscreen (F11 / double-click) and a selectable video mode. It defaults to
+  raw NV12 1080p60, which needs no decoding at all.
+- **Audio monitoring**: plays the card's audio on your default output device,
+  with volume, mute (M) and an input level meter.
+- **Card settings** (everything the CLI can do): HDR tone mapping, HDMI color
+  range, EDID source, audio input and video scaler (4K S), read back from the
+  card on start.
+
+### Build and install
+
+```bash
+# Fedora
+sudo dnf install libusb1-devel gtk4-devel libadwaita-devel gstreamer1-devel \
+    gstreamer1-plugins-base-devel gstreamer1-plugins-good gstreamer1-plugin-gtk4
+# Debian/Ubuntu
+sudo apt install libusb-1.0-0-dev libgtk-4-dev libadwaita-1-dev libgstreamer1.0-dev \
+    gstreamer1.0-plugins-good gstreamer1.0-gtk4
+
+cargo install --path gui
+install -Dm644 gui/data/io.github.etchebarne.Elgato4kCapture.desktop \
+    ~/.local/share/applications/io.github.etchebarne.Elgato4kCapture.desktop
+```
+
+To change card settings without root, install the udev rule once and replug
+the card:
+
+```bash
+sudo cp gui/data/70-elgato4k.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+Notes:
+
+- The video device can only be streamed by one application at a time. Close
+  OBS (or switch its source off) while the preview is running. Audio can be
+  shared.
+- No sound? Check that the level meter moves. If it doesn't, the card is
+  receiving silence: set **Audio input** to HDMI and check the console's audio
+  output settings (on a PS5, a headset plugged into the controller takes all
+  audio by default).
+- On the 4K X, changing settings briefly detaches the UVC driver, which
+  interrupts the preview. Press Retry afterwards.
+
 ## Features
 
 - ✅ **HDR Tone Mapping** - Enable/disable HDR to SDR tone mapping

@@ -22,3 +22,6 @@ codegen-units = 1
 [features]
 default = ["update-check"]
 update-check = ["dep:ureq"]
+
+[workspace]
+members = [".", "gui"]
