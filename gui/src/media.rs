@@ -309,7 +309,17 @@ pub const LEVEL_ELEMENT: &str = "level";
 pub fn build_audio_pipeline(device: &gst::Device) -> Result<gst::Pipeline, glib::BoolError> {
     let pipeline = gst::Pipeline::with_name("audio");
 
-    let src = device.create_element(None)?;
+    // PipeWire's device monitor hands out pipewiresrc, whose timestamps jump
+    // by ~65 ms about once a second here; pulsesink resyncs on every jump,
+    // which is heard as a short dropout.  pulsesrc (via pipewire-pulse) on the
+    // same node keeps clean timestamps.
+    let node_name = device.properties().and_then(|p| p.get::<String>("node.name").ok());
+    let src = match node_name {
+        Some(node) if gst::ElementFactory::find("pulsesrc").is_some() => {
+            gst::ElementFactory::make("pulsesrc").property("device", node).build()?
+        }
+        _ => device.create_element(None)?,
+    };
     // Small capture buffers keep the monitor close to real time.
     if src.has_property("buffer-time") {
         src.set_property("buffer-time", 40_000i64);
