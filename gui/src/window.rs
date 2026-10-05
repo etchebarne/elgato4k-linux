@@ -101,20 +101,25 @@ pub fn build(app: &adw::Application) {
     // Debug aid: ELGATO4K_SCREENSHOT=/path.png saves the window after a few
     // seconds (GNOME on Wayland does not let other tools capture it).
     if let Some(path) = std::env::var_os("ELGATO4K_SCREENSHOT") {
-        let window = win.window.clone();
-        glib::timeout_add_seconds_local_once(4, move || save_screenshot(&window, &path));
+        let (window, picture) = (win.window.clone(), win.picture.clone());
+        glib::timeout_add_seconds_local_once(4, move || save_screenshot(&window, &picture, &path));
     }
 }
 
-fn save_screenshot(window: &adw::ApplicationWindow, path: &std::ffi::OsStr) {
-    let paintable = gtk::WidgetPaintable::new(Some(window));
-    let (width, height) = (window.width() as f64, window.height() as f64);
-    let snapshot = gtk::Snapshot::new();
-    paintable.snapshot(&snapshot, width, height);
-    let Some(node) = snapshot.to_node() else { eprintln!("screenshot: empty snapshot"); return };
+fn save_screenshot(window: &adw::ApplicationWindow, picture: &gtk::Picture, path: &std::ffi::OsStr) {
     let Some(renderer) = window.native().and_then(|n| n.renderer()) else { eprintln!("screenshot: no renderer"); return };
-    let texture = renderer.render_texture(&node, None);
-    if let Err(e) = texture.save_to_png(path) {
+    let snapshot = gtk::Snapshot::new();
+    gtk::WidgetPaintable::new(Some(window)).snapshot(&snapshot, window.width() as f64, window.height() as f64);
+    // Unmapped windows snapshot to nothing; fall back to the current video
+    // frame at its native size, still rendered by GTK.
+    let node = snapshot.to_node().or_else(|| {
+        let frame = picture.paintable()?;
+        let snapshot = gtk::Snapshot::new();
+        frame.snapshot(&snapshot, frame.intrinsic_width() as f64, frame.intrinsic_height() as f64);
+        snapshot.to_node()
+    });
+    let Some(node) = node else { eprintln!("screenshot: nothing to render"); return };
+    if let Err(e) = renderer.render_texture(&node, None).save_to_png(path) {
         eprintln!("screenshot failed: {e}");
     }
 }
