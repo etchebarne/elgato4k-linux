@@ -49,9 +49,11 @@ Notes:
   OBS (or switch its source off) while the preview is running. Audio can be
   shared.
 - No sound? Check that the level meter moves. If it doesn't, the card is
-  receiving silence: set **Audio input** to HDMI and check the console's audio
-  output settings (on a PS5, a headset plugged into the controller takes all
-  audio by default).
+  delivering silence. First unplug the card's USB cable and plug it back in:
+  the 4K S's HDMI audio can get stuck outputting digital silence while video
+  keeps working, and a power cycle fixes it. Otherwise set **Audio input** to
+  HDMI and check the console's audio output (it must be stereo Linear PCM; on
+  a PS5, a headset plugged into the controller takes all audio by default).
 - On the 4K X, changing settings briefly detaches the UVC driver, which
   interrupts the preview. Press Retry afterwards.
 
