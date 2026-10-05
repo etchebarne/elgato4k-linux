@@ -672,6 +672,20 @@ impl Window {
         let status = &snapshot.status;
         let is_4ks = snapshot.model == DeviceModel::Elgato4KS;
 
+        // The 4K S answers every HID read with the same status block, so the
+        // per-setting values decoded from it are meaningless.  Only show what
+        // the card reports on the 4K X; on the 4K S the rows are write-only.
+        if is_4ks {
+            self.device_row.set_subtitle("Elgato 4K S");
+            self.card_group.set_description(Some(
+                "The 4K S can't report its current settings, so these show defaults until you change them.",
+            ));
+            self.audio_input_row.set_visible(true);
+            self.scaler_row.set_visible(true);
+            self.card_group.set_sensitive(true);
+            return;
+        }
+
         self.syncing.set(true);
         self.device_row.set_subtitle(&format!("Elgato {} · firmware {}", snapshot.model, status.firmware_version));
         if let Some(ReadValue::Known(v)) = status.hdr_tone_mapping {
