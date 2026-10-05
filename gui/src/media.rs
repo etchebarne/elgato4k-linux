@@ -153,7 +153,9 @@ fn probe_modes(path: &str) -> Vec<VideoMode> {
 /// The mode to use when the user has not picked one: 1080p60, preferring
 /// uncompressed NV12 (no decoding, lowest latency) over MJPEG.
 pub fn default_mode(modes: &[VideoMode]) -> usize {
-    let is_1080p60 = |m: &VideoMode| m.width == 1920 && m.height == 1080 && m.fps == gst::Fraction::new(60, 1);
+    let is_1080p60 = |m: &VideoMode| {
+        m.width == 1920 && m.height == 1080 && (m.pixels_per_second() / (1920.0 * 1080.0) - 60.0).abs() < 0.5
+    };
     let nv12 = Encoding::Raw("NV12".into());
     modes
         .iter()
@@ -184,8 +186,9 @@ fn strings(s: &gst::StructureRef, field: &str) -> Vec<String> {
 fn fractions(s: &gst::StructureRef, field: &str) -> Vec<gst::Fraction> {
     values::<gst::Fraction>(s, field)
         .into_iter()
-        // Drop odd driver-reported rates like 5000000/20833.
-        .filter(|f| f.denom() == 1 || f.denom() == 1001)
+        // The card reports whatever the HDMI source sends, e.g. 59.94 fps as
+        // 7013/117, so accept any sane rate rather than only n/1 and n/1001.
+        .filter(|f| f.numer() > 0 && f.denom() > 0 && (1.0..=500.0).contains(&(f.numer() as f64 / f.denom() as f64)))
         .collect()
 }
 

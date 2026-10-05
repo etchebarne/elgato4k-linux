@@ -452,8 +452,31 @@ impl Window {
 
     /// Find the card's video and audio devices and start both pipelines.
     fn discover(self: &Rc<Self>) {
-        let source = media::find_video_source();
+        self.load_video_source();
         let audio_device = media::find_audio_device();
+
+        self.audio_row.set_subtitle(
+            &audio_device.as_ref().map(|d| gst::prelude::DeviceExt::display_name(d).to_string()).unwrap_or_else(|| "No audio device found".into()),
+        );
+        eprintln!(
+            "video device: {}, audio device: {}",
+            self.source.borrow().as_ref().map_or("none", |s| s.path.as_str()),
+            audio_device.as_ref().map_or_else(|| "none".into(), |d| gst::prelude::DeviceExt::display_name(d).to_string()),
+        );
+        self.audio_device.replace(audio_device);
+
+        if self.source.borrow().is_none() && self.audio_device.borrow().is_none() {
+            self.stop("No capture card found", "Connect your Elgato 4K S or 4K X and press Retry.");
+            return;
+        }
+        self.start_video();
+        self.start_audio();
+    }
+
+    /// Find the video node and fill the mode list, keeping the user's mode
+    /// when the card still offers it.
+    fn load_video_source(&self) {
+        let source = media::find_video_source();
 
         self.syncing.set(true);
         match &source {
@@ -474,24 +497,22 @@ impl Window {
             }
         }
         self.syncing.set(false);
-
-        self.audio_row.set_subtitle(
-            &audio_device.as_ref().map(|d| gst::prelude::DeviceExt::display_name(d).to_string()).unwrap_or_else(|| "No audio device found".into()),
-        );
-        eprintln!(
-            "video device: {}, audio device: {}",
-            source.as_ref().map_or("none", |s| s.path.as_str()),
-            audio_device.as_ref().map_or_else(|| "none".into(), |d| gst::prelude::DeviceExt::display_name(d).to_string()),
-        );
         self.source.replace(source);
-        self.audio_device.replace(audio_device);
+    }
 
-        if self.source.borrow().is_none() && self.audio_device.borrow().is_none() {
-            self.stop("No capture card found", "Connect your Elgato 4K S or 4K X and press Retry.");
-            return;
-        }
-        self.start_video();
-        self.start_audio();
+    /// The scaler and EDID settings change which modes the card offers (it
+    /// mirrors the HDMI input's timing), so re-probe once the card settles.
+    fn reload_video_after_signal_change(self: &Rc<Self>) {
+        self.video.replace(None);
+        self.show_status("camera-video-symbolic", "Waiting for the card…", "");
+        self.retry_button.set_visible(false);
+        glib::timeout_add_local_once(
+            std::time::Duration::from_millis(2000),
+            glib::clone!(#[weak(rename_to = this)] self, move || {
+                this.load_video_source();
+                this.start_video();
+            }),
+        );
     }
 
     fn start_video(self: &Rc<Self>) {
@@ -720,7 +741,11 @@ impl Window {
             let result = gio::spawn_blocking(move || controls::apply(setting)).await.expect("device thread panicked");
             this.card_group.set_sensitive(true);
             match result {
-                Ok(()) => {}
+                Ok(()) => {
+                    if matches!(setting, Setting::VideoScaler(_) | Setting::EdidSource(_)) {
+                        this.reload_video_after_signal_change();
+                    }
+                }
                 Err(e) => {
                     this.permission_banner.set_revealed(controls::is_permission_error(&e));
                     this.toast(&format!("Could not apply setting: {e}"));
