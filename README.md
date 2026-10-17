@@ -19,6 +19,13 @@ day-to-day job of Elgato's 4K Capture Utility:
 - **Card settings** (everything the CLI can do): HDR tone mapping, HDMI color
   range, EDID source, audio input and video scaler (4K S), read back from the
   card on start.
+- **Frame generation** with Lossless Scaling's LSFG through
+  [lsfg-vk](https://github.com/PancakeTAS/lsfg-vk): multiplier, flow scale,
+  performance and HDR mode, applied live. Needs lsfg-vk installed and Lossless
+  Scaling owned on Steam. Turning it on restarts the app on GTK's Vulkan
+  renderer, which costs more CPU per video frame than the GL one used
+  otherwise. The app keeps its own `elgato4k-gui` profile in
+  `~/.config/lsfg-vk/conf.toml`.
 
 ### Build and install
 

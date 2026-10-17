@@ -12,11 +12,13 @@ use gtk::{gio, glib};
 
 use crate::config::Config;
 use crate::controls::{self, Setting};
+use crate::framegen;
 use crate::media::{self, VideoSource};
 
 const COLOR_RANGES: [EdidRangePolicy; 3] = [EdidRangePolicy::Auto, EdidRangePolicy::Expand, EdidRangePolicy::Shrink];
 const EDID_SOURCES: [EdidSource; 3] = [EdidSource::Display, EdidSource::Merged, EdidSource::Internal];
 const AUDIO_INPUTS: [AudioInput; 2] = [AudioInput::Embedded, AudioInput::Analog];
+const FRAME_GEN_MULTIPLIERS: [u32; 3] = [2, 3, 4];
 
 /// Shown when the card's settings cannot be opened due to USB permissions.
 const UDEV_HELP: &str = "The capture card's USB control interface is only writable by root.\n\
@@ -61,6 +63,14 @@ struct Window {
     volume: gtk::Adjustment,
     level_bar: gtk::LevelBar,
     audio_row: adw::ActionRow,
+
+    frame_gen_row: adw::SwitchRow,
+    multiplier_row: adw::ComboRow,
+    flow_scale: gtk::Adjustment,
+    performance_row: adw::SwitchRow,
+    hdr_mode_row: adw::SwitchRow,
+    /// Debounces writes to the lsfg-vk config, which it reloads on change.
+    frame_gen_write: RefCell<Option<glib::SourceId>>,
 
     permission_banner: adw::Banner,
     card_group: adw::PreferencesGroup,
@@ -182,6 +192,46 @@ impl Window {
         preview_group.add(&mode_row);
         preview_group.add(&hw_row);
 
+        // --- Sidebar: frame generation -------------------------------------
+        let frame_gen = config.frame_gen;
+        let unavailable = framegen::unavailable_reason();
+        let frame_gen_row = adw::SwitchRow::builder()
+            .title("Frame generation")
+            .subtitle(unavailable.unwrap_or("Smoother motion from generated frames; adds about a frame of latency"))
+            .active(frame_gen.enabled && unavailable.is_none())
+            .sensitive(unavailable.is_none())
+            .build();
+        let multiplier_row = combo_row("Multiplier", &["2× frames", "3× frames", "4× frames"]);
+        set_combo(&multiplier_row, &FRAME_GEN_MULTIPLIERS, frame_gen.multiplier);
+        let flow_scale = gtk::Adjustment::new(frame_gen.flow_scale, 0.25, 1.0, 0.05, 0.1, 0.0);
+        let flow_scale_row = adw::SpinRow::builder()
+            .title("Flow scale")
+            .subtitle("Lower is faster, higher is more accurate")
+            .adjustment(&flow_scale)
+            .digits(2)
+            .build();
+        let performance_row = adw::SwitchRow::builder()
+            .title("Performance mode")
+            .subtitle("Lighter model with slightly lower quality")
+            .active(frame_gen.performance_mode)
+            .build();
+        let hdr_mode_row = adw::SwitchRow::builder()
+            .title("HDR mode")
+            .subtitle("Only for HDR output")
+            .active(frame_gen.hdr_mode)
+            .build();
+        let frame_gen_group = adw::PreferencesGroup::builder()
+            .title("Frame generation")
+            .description("Lossless Scaling, through lsfg-vk")
+            .build();
+        frame_gen_group.add(&frame_gen_row);
+        for row in [multiplier_row.upcast_ref::<gtk::Widget>(), flow_scale_row.upcast_ref(),
+                    performance_row.upcast_ref(), hdr_mode_row.upcast_ref()] {
+            frame_gen_row.bind_property("active", row, "sensitive").sync_create().build();
+            row.set_visible(unavailable.is_none());
+            frame_gen_group.add(row);
+        }
+
         // --- Sidebar: audio ------------------------------------------------
         let volume = gtk::Adjustment::new(config.volume, 0.0, 1.0, 0.01, 0.1, 0.0);
         let volume_scale = gtk::Scale::builder()
@@ -247,6 +297,7 @@ impl Window {
 
         let page = adw::PreferencesPage::new();
         page.add(&preview_group);
+        page.add(&frame_gen_group);
         page.add(&audio_group);
         page.add(&card_group);
         let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -294,6 +345,8 @@ impl Window {
         Self {
             window, toasts, toolbar, split, picture, status_page, retry_button, play_button, mute_button,
             mode_row, hw_row, volume, level_bar, audio_row,
+            frame_gen_row, multiplier_row, flow_scale, performance_row, hdr_mode_row,
+            frame_gen_write: RefCell::new(None),
             permission_banner, card_group, device_row, hdr_row, range_row, edid_row, audio_input_row, scaler_row,
             syncing: Cell::new(false),
             source: RefCell::new(None),
@@ -327,11 +380,43 @@ impl Window {
             this.start_video();
         }));
 
+        this.frame_gen_row.connect_active_notify(glib::clone!(#[weak] this, move |row| {
+            let enabled = row.is_active();
+            this.update_frame_gen(|s| s.enabled = enabled);
+            if enabled && !framegen::renderer_ready() {
+                let toast = adw::Toast::builder()
+                    .title("Restart the app to turn on frame generation")
+                    .button_label("Restart")
+                    .action_name("win.restart")
+                    .timeout(0)
+                    .build();
+                this.toasts.add_toast(toast);
+            }
+        }));
+        this.multiplier_row.connect_selected_notify(glib::clone!(#[weak] this, move |row| {
+            if let Some(&m) = FRAME_GEN_MULTIPLIERS.get(row.selected() as usize) {
+                this.update_frame_gen(|s| s.multiplier = m);
+            }
+        }));
+        this.flow_scale.connect_value_changed(glib::clone!(#[weak] this, move |adj| {
+            let value = adj.value();
+            this.update_frame_gen(|s| s.flow_scale = value);
+        }));
+        this.performance_row.connect_active_notify(glib::clone!(#[weak] this, move |row| {
+            let active = row.is_active();
+            this.update_frame_gen(|s| s.performance_mode = active);
+        }));
+        this.hdr_mode_row.connect_active_notify(glib::clone!(#[weak] this, move |row| {
+            let active = row.is_active();
+            this.update_frame_gen(|s| s.hdr_mode = active);
+        }));
+
         this.volume.connect_value_changed(glib::clone!(#[weak] this, move |adj| {
             this.config.borrow_mut().volume = adj.value();
             this.apply_volume();
         }));
         // The volume is persisted on close rather than on every slider tick.
+
 
         this.mute_button.connect_toggled(glib::clone!(#[weak] this, move |button| {
             let muted = button.is_active();
@@ -412,6 +497,13 @@ impl Window {
             this.save_config();
             this.video.replace(None);
             this.audio.replace(None);
+            if framegen::renderer_ready() {
+                if let Some(pending) = this.frame_gen_write.take() {
+                    pending.remove();
+                    framegen::write_profile(&this.config.borrow().frame_gen);
+                }
+                crate::exit_now();
+            }
             glib::Propagation::Proceed
         }));
     }
@@ -446,7 +538,13 @@ impl Window {
         let refresh = gio::SimpleAction::new("refresh-card", None);
         refresh.connect_activate(glib::clone!(#[weak] this, move |_, _| this.refresh_card()));
 
-        for action in [fullscreen, playback, mute, sidebar, refresh] {
+        let restart = gio::SimpleAction::new("restart", None);
+        restart.connect_activate(glib::clone!(#[weak] this, move |_, _| {
+            crate::request_restart();
+            this.window.close();
+        }));
+
+        for action in [fullscreen, playback, mute, sidebar, refresh, restart] {
             this.window.add_action(&action);
         }
     }
@@ -759,6 +857,52 @@ impl Window {
                 }
             }
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // Frame generation
+    // -----------------------------------------------------------------------
+
+    /// Save a frame generation change and hand it to lsfg-vk, which picks it
+    /// up live.  Writes are debounced so dragging a value doesn't make the
+    /// layer rebuild its swapchain on every step.
+    fn update_frame_gen(self: &Rc<Self>, change: impl FnOnce(&mut framegen::Settings)) {
+        change(&mut self.config.borrow_mut().frame_gen);
+        self.save_config();
+
+        if let Some(pending) = self.frame_gen_write.take() {
+            pending.remove();
+        }
+        let source = glib::timeout_add_local_once(
+            std::time::Duration::from_millis(300),
+            glib::clone!(#[weak(rename_to = this)] self, move || {
+                this.frame_gen_write.replace(None);
+                framegen::write_profile(&this.config.borrow().frame_gen);
+                if framegen::renderer_ready() {
+                    this.rebuild_swapchain();
+                }
+            }),
+        );
+        self.frame_gen_write.replace(Some(source));
+    }
+
+    /// lsfg-vk only applies a new profile when the swapchain is recreated.
+    /// It asks for that by failing the next present with OUT_OF_DATE, but
+    /// GTK ignores present errors and only rebuilds on resize, leaving the
+    /// layer passing frames through untouched.  Remapping the window gives
+    /// it a fresh renderer, and with it a fresh swapchain.
+    fn rebuild_swapchain(&self) {
+        let window = &self.window;
+        if !window.is_realized() {
+            return;
+        }
+        let fullscreen = window.is_fullscreen();
+        let maximized = window.is_maximized();
+        window.set_visible(false);
+        WidgetExt::unrealize(window);
+        window.set_fullscreened(fullscreen);
+        window.set_maximized(maximized);
+        window.present();
     }
 
     fn toast(&self, text: &str) {
