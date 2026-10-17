@@ -19,6 +19,8 @@ const COLOR_RANGES: [EdidRangePolicy; 3] = [EdidRangePolicy::Auto, EdidRangePoli
 const EDID_SOURCES: [EdidSource; 3] = [EdidSource::Display, EdidSource::Merged, EdidSource::Internal];
 const AUDIO_INPUTS: [AudioInput; 2] = [AudioInput::Embedded, AudioInput::Analog];
 const FRAME_GEN_MULTIPLIERS: [u32; 3] = [2, 3, 4];
+/// How long the pointer must rest over the video before it is hidden.
+const CURSOR_HIDE_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Shown when the card's settings cannot be opened due to USB permissions.
 const UDEV_HELP: &str = "The capture card's USB control interface is only writable by root.\n\
@@ -74,6 +76,11 @@ struct Window {
     hdr_mode_row: adw::SwitchRow,
     /// Debounces writes to the lsfg-vk config, which it reloads on change.
     frame_gen_write: RefCell<Option<glib::SourceId>>,
+    /// Hides the pointer once it has rested over the video for a while.
+    cursor_idle: RefCell<Option<glib::SourceId>>,
+    /// Last pointer position over the video, to ignore motion events that
+    /// do not actually move it (compositors resend them, e.g. on cursor change).
+    pointer: Cell<Option<(f64, f64)>>,
 
     permission_banner: adw::Banner,
     card_group: adw::PreferencesGroup,
@@ -353,6 +360,8 @@ impl Window {
             outputs: RefCell::new(Vec::new()),
             frame_gen_row, multiplier_row, flow_scale, performance_row, hdr_mode_row,
             frame_gen_write: RefCell::new(None),
+            cursor_idle: RefCell::new(None),
+            pointer: Cell::new(None),
             permission_banner, card_group, device_row, hdr_row, range_row, edid_row, audio_input_row, scaler_row,
             syncing: Cell::new(false),
             source: RefCell::new(None),
@@ -463,6 +472,15 @@ impl Window {
             }
         }));
         this.picture.add_controller(double_click);
+
+        let motion = gtk::EventControllerMotion::new();
+        motion.connect_enter(glib::clone!(#[weak] this, move |_, x, y| this.pointer_moved(x, y)));
+        motion.connect_motion(glib::clone!(#[weak] this, move |_, x, y| this.pointer_moved(x, y)));
+        motion.connect_leave(glib::clone!(#[weak] this, move |_| {
+            this.pointer.set(None);
+            this.show_cursor();
+        }));
+        this.picture.add_controller(motion);
 
         let escape = gtk::EventControllerKey::new();
         escape.connect_key_pressed(glib::clone!(#[weak] this, #[upgrade_or] glib::Propagation::Proceed, move |_, key, _, _| {
@@ -800,6 +818,28 @@ impl Window {
         self.picture.set_paintable(None::<&gtk::gdk::Paintable>);
         self.show_status("media-playback-stop-symbolic", title, description);
         self.update_play_button();
+    }
+
+    fn pointer_moved(self: &Rc<Self>, x: f64, y: f64) {
+        if self.pointer.replace(Some((x, y))) == Some((x, y)) {
+            return;
+        }
+        self.show_cursor();
+        let source = glib::timeout_add_local_once(
+            CURSOR_HIDE_DELAY,
+            glib::clone!(#[weak(rename_to = this)] self, move || {
+                this.cursor_idle.replace(None);
+                this.picture.set_cursor_from_name(Some("none"));
+            }),
+        );
+        self.cursor_idle.replace(Some(source));
+    }
+
+    fn show_cursor(&self) {
+        if let Some(pending) = self.cursor_idle.take() {
+            pending.remove();
+        }
+        self.picture.set_cursor(None);
     }
 
     fn show_status(&self, icon: &str, title: &str, description: &str) {
