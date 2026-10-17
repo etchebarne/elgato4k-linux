@@ -342,6 +342,8 @@ pub fn build_video_pipeline(
 pub const VOLUME_ELEMENT: &str = "volume";
 /// Name of the `level` element inside the audio pipeline.
 pub const LEVEL_ELEMENT: &str = "level";
+/// How the playback stream is named in the sound server.
+const CLIENT_NAME: &str = "Elgato 4K Capture";
 
 /// Capture from the card and play it on `output` (a sink name from
 /// [`list_output_devices`]), or on the default output device.
@@ -378,23 +380,50 @@ pub fn build_audio_pipeline(device: &gst::Device, output: Option<&str>) -> Resul
         .build()?;
     let volume = gst::ElementFactory::make("volume").name(VOLUME_ELEMENT).build()?;
 
-    let sink = match gst::ElementFactory::make("pulsesink").build() {
-        Ok(sink) => {
-            sink.set_property("buffer-time", 40_000i64);
-            sink.set_property("latency-time", 10_000i64);
-            sink.set_property("client-name", "Elgato 4K Capture");
-            if let Some(output) = output {
-                sink.set_property("device", output);
-            }
-            sink
-        }
-        Err(_) => gst::ElementFactory::make("autoaudiosink").build()?,
-    };
+    let sink = build_audio_sink(output)?;
 
     let chain = [&src, &src_caps, &convert, &resample, &level, &volume, &sink];
     pipeline.add_many(chain)?;
     gst::Element::link_many(chain)?;
     Ok(pipeline)
+}
+
+/// The playback end of the audio pipeline.
+///
+/// On PipeWire, play natively: pipewire-pulse streams to Bluetooth (A2DP)
+/// sinks come out as pure digital silence here, even for a test tone, while
+/// pipewiresink on the same sink plays fine.  Sink names from
+/// [`list_output_devices`] are PipeWire node names, so both sinks take them.
+fn build_audio_sink(output: Option<&str>) -> Result<gst::Element, glib::BoolError> {
+    let pipewire_running = glib::user_runtime_dir().join("pipewire-0").exists();
+    if pipewire_running && let Ok(sink) = gst::ElementFactory::make("pipewiresink").build() {
+        sink.set_property("client-name", CLIENT_NAME);
+        sink.set_property(
+            "stream-properties",
+            gst::Structure::builder("props")
+                .field("node.name", CLIENT_NAME)
+                .field("media.name", "Capture card audio")
+                // ~10 ms, like the pulsesink buffers below.
+                .field("node.latency", "480/48000")
+                .build(),
+        );
+        if let Some(output) = output {
+            sink.set_property("target-object", output);
+        }
+        return Ok(sink);
+    }
+    match gst::ElementFactory::make("pulsesink").build() {
+        Ok(sink) => {
+            sink.set_property("buffer-time", 40_000i64);
+            sink.set_property("latency-time", 10_000i64);
+            sink.set_property("client-name", CLIENT_NAME);
+            if let Some(output) = output {
+                sink.set_property("device", output);
+            }
+            Ok(sink)
+        }
+        Err(_) => gst::ElementFactory::make("autoaudiosink").build(),
+    }
 }
 
 /// Extract the loudest channel's peak (dBFS) from a `level` element message.
