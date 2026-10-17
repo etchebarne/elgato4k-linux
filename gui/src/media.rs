@@ -221,6 +221,41 @@ pub fn find_audio_device() -> Option<gst::Device> {
         .find_map(|wanted| candidates.iter().find(|d| factory(d) == *wanted).cloned())
 }
 
+/// A playback device, identified by its sound-server sink name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutputDevice {
+    /// Sink name as understood by pulsesink's `device` property.
+    pub name: String,
+    pub label: String,
+}
+
+/// List the sound server's playback devices.
+pub fn list_output_devices() -> Vec<OutputDevice> {
+    let monitor = gst::DeviceMonitor::new();
+    monitor.add_filter(Some("Audio/Sink"), None);
+    if monitor.start().is_err() {
+        return Vec::new();
+    }
+    let devices = monitor.devices();
+    monitor.stop();
+
+    let mut outputs: Vec<OutputDevice> = Vec::new();
+    for device in devices {
+        // PipeWire devices carry their node name; pulse devices hand out a
+        // pulsesink with `device` already set.  pipewire-pulse uses the node
+        // name as the sink name, so both end up usable by pulsesink.
+        let name = device.properties().and_then(|p| p.get::<String>("node.name").ok()).or_else(|| {
+            let element = device.create_element(None).ok()?;
+            (element.factory()?.name() == "pulsesink").then(|| element.property::<Option<String>>("device"))?
+        });
+        let Some(name) = name else { continue };
+        if !outputs.iter().any(|o| o.name == name) {
+            outputs.push(OutputDevice { name, label: device.display_name().to_string() });
+        }
+    }
+    outputs
+}
+
 /// Whether NVIDIA's JPEG decoder (nvcodec plugin) is usable.
 pub fn hardware_jpeg_available() -> bool {
     gst::ElementFactory::find("nvjpegdec").is_some() && gst::ElementFactory::find("cudadownload").is_some()
@@ -308,8 +343,9 @@ pub const VOLUME_ELEMENT: &str = "volume";
 /// Name of the `level` element inside the audio pipeline.
 pub const LEVEL_ELEMENT: &str = "level";
 
-/// Capture from the card and play it on the default output device.
-pub fn build_audio_pipeline(device: &gst::Device) -> Result<gst::Pipeline, glib::BoolError> {
+/// Capture from the card and play it on `output` (a sink name from
+/// [`list_output_devices`]), or on the default output device.
+pub fn build_audio_pipeline(device: &gst::Device, output: Option<&str>) -> Result<gst::Pipeline, glib::BoolError> {
     let pipeline = gst::Pipeline::with_name("audio");
 
     // PipeWire's device monitor hands out pipewiresrc, whose timestamps jump
@@ -347,6 +383,9 @@ pub fn build_audio_pipeline(device: &gst::Device) -> Result<gst::Pipeline, glib:
             sink.set_property("buffer-time", 40_000i64);
             sink.set_property("latency-time", 10_000i64);
             sink.set_property("client-name", "Elgato 4K Capture");
+            if let Some(output) = output {
+                sink.set_property("device", output);
+            }
             sink
         }
         Err(_) => gst::ElementFactory::make("autoaudiosink").build()?,

@@ -63,6 +63,9 @@ struct Window {
     volume: gtk::Adjustment,
     level_bar: gtk::LevelBar,
     audio_row: adw::ActionRow,
+    output_row: adw::ComboRow,
+    /// Sink names behind `output_row`'s entries; `None` is the system default.
+    outputs: RefCell<Vec<Option<String>>>,
 
     frame_gen_row: adw::SwitchRow,
     multiplier_row: adw::ComboRow,
@@ -255,10 +258,12 @@ impl Window {
         level_bar.remove_offset_value(Some(gtk::LEVEL_BAR_OFFSET_FULL));
         let audio_row = adw::ActionRow::builder().title("Input level").build();
         audio_row.add_suffix(&level_bar);
+        let output_row = combo_row("Output device", &[]);
         let audio_group = adw::PreferencesGroup::builder()
             .title("Audio")
-            .description("Plays the card's audio on your default output device")
+            .description("Plays the card's audio on your computer")
             .build();
+        audio_group.add(&output_row);
         audio_group.add(&volume_row);
         audio_group.add(&audio_row);
 
@@ -344,7 +349,8 @@ impl Window {
 
         Self {
             window, toasts, toolbar, split, picture, status_page, retry_button, play_button, mute_button,
-            mode_row, hw_row, volume, level_bar, audio_row,
+            mode_row, hw_row, volume, level_bar, audio_row, output_row,
+            outputs: RefCell::new(Vec::new()),
             frame_gen_row, multiplier_row, flow_scale, performance_row, hdr_mode_row,
             frame_gen_write: RefCell::new(None),
             permission_banner, card_group, device_row, hdr_row, range_row, edid_row, audio_input_row, scaler_row,
@@ -417,6 +423,17 @@ impl Window {
         }));
         // The volume is persisted on close rather than on every slider tick.
 
+        this.output_row.connect_selected_notify(glib::clone!(#[weak] this, move |row| {
+            if this.syncing.get() {
+                return;
+            }
+            let Some(output) = this.outputs.borrow().get(row.selected() as usize).cloned() else { return };
+            this.config.borrow_mut().audio_output = output;
+            this.save_config();
+            if this.audio.borrow().is_some() {
+                this.start_audio();
+            }
+        }));
 
         this.mute_button.connect_toggled(glib::clone!(#[weak] this, move |button| {
             let muted = button.is_active();
@@ -557,6 +574,7 @@ impl Window {
     fn discover(self: &Rc<Self>) {
         self.load_video_source();
         let audio_device = media::find_audio_device();
+        self.refresh_outputs();
 
         self.audio_row.set_subtitle(
             &audio_device.as_ref().map(|d| gst::prelude::DeviceExt::display_name(d).to_string()).unwrap_or_else(|| "No audio device found".into()),
@@ -694,7 +712,8 @@ impl Window {
         let device = self.audio_device.borrow();
         let Some(device) = device.as_ref() else { return };
 
-        let pipeline = match media::build_audio_pipeline(device) {
+        let output = self.config.borrow().audio_output.clone();
+        let pipeline = match media::build_audio_pipeline(device, output.as_deref()) {
             Ok(p) => p,
             Err(e) => {
                 self.toast(&format!("Audio unavailable: {e}"));
@@ -715,6 +734,33 @@ impl Window {
         self.audio.replace(Some(Running { pipeline, _watch: watch }));
         self.apply_volume();
         self.update_play_button();
+    }
+
+    /// Re-list playback devices into `output_row`, keeping the saved choice
+    /// selectable even while that device is unplugged.
+    fn refresh_outputs(&self) {
+        let devices = media::list_output_devices();
+        let saved = self.config.borrow().audio_output.clone();
+        let mut labels = vec!["System default".to_string()];
+        let mut names = vec![None];
+        for device in &devices {
+            labels.push(device.label.clone());
+            names.push(Some(device.name.clone()));
+        }
+        if let Some(saved) = &saved
+            && !devices.iter().any(|d| &d.name == saved)
+        {
+            labels.push(format!("{saved} (not connected)"));
+            names.push(Some(saved.clone()));
+        }
+        let selected = names.iter().position(|n| *n == saved).unwrap_or(0);
+
+        self.syncing.set(true);
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        self.output_row.set_model(Some(&gtk::StringList::new(&labels)));
+        self.output_row.set_selected(selected as u32);
+        self.outputs.replace(names);
+        self.syncing.set(false);
     }
 
     fn on_audio_message(self: &Rc<Self>, msg: &gst::Message) {

@@ -15,13 +15,15 @@ pub struct Config {
     /// Slider position, 0.0–1.0 (mapped to a cubic gain curve).
     pub volume: f64,
     pub muted: bool,
+    /// Sink name of the chosen output device; `None` follows the system default.
+    pub audio_output: Option<String>,
     pub show_sidebar: bool,
     pub frame_gen: framegen::Settings,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { video_mode: None, hardware_decode: false, volume: 0.8, muted: false, show_sidebar: true, frame_gen: framegen::Settings::default() }
+        Self { video_mode: None, hardware_decode: false, volume: 0.8, muted: false, audio_output: None, show_sidebar: true, frame_gen: framegen::Settings::default() }
     }
 }
 
@@ -41,6 +43,7 @@ impl Config {
                 "hardware_decode" => config.hardware_decode = value == "true",
                 "volume" => config.volume = value.parse().unwrap_or(config.volume).clamp(0.0, 1.0),
                 "muted" => config.muted = value == "true",
+                "audio_output" if !value.is_empty() => config.audio_output = Some(value.to_string()),
                 "show_sidebar" => config.show_sidebar = value == "true",
                 "frame_gen" => config.frame_gen.enabled = value == "true",
                 "frame_gen_multiplier" => {
@@ -63,12 +66,13 @@ impl Config {
             let _ = fs::create_dir_all(dir);
         }
         let text = format!(
-            "video_mode={}\nhardware_decode={}\nvolume={:.3}\nmuted={}\nshow_sidebar={}\n\
+            "video_mode={}\nhardware_decode={}\nvolume={:.3}\nmuted={}\naudio_output={}\nshow_sidebar={}\n\
              frame_gen={}\nframe_gen_multiplier={}\nframe_gen_flow_scale={:.2}\nframe_gen_performance={}\nframe_gen_hdr={}\n",
             self.video_mode.as_deref().unwrap_or(""),
             self.hardware_decode,
             self.volume,
             self.muted,
+            self.audio_output.as_deref().unwrap_or(""),
             self.show_sidebar,
             self.frame_gen.enabled,
             self.frame_gen.multiplier,
